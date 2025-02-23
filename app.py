@@ -18,6 +18,7 @@ from metodos.vogel import metodo_vogel
 
 app = Flask(__name__)
 CORS(app)
+
 ############### METODO SIMPLEX ##########################################
 @app.route('/simplex', methods=['POST'])
 def simplex_solver():

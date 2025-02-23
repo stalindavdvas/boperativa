@@ -1,117 +1,213 @@
 import numpy as np
+from pulp import *
 
-class GranM:
+
+class BigMWithSteps:
     def __init__(self, c, A, b, constraint_types, problem_type='max', M=1e6):
         """
-        Inicializa el problema de programación lineal con el método de la Gran M.
-        :param c: Coeficientes de la función objetivo (1D array).
-        :param A: Coeficientes de las restricciones (2D array).
-        :param b: Lado derecho de las restricciones (1D array).
-        :param constraint_types: Lista de tipos de restricciones ('<=', '>=', '=').
-        :param problem_type: 'max' para maximización, 'min' para minimización.
-        :param M: Valor grande para penalizar las variables artificiales.
+        Inicializa el método de la Gran M con seguimiento de pasos.
+
+        Args:
+            c: Vector de coeficientes de la función objetivo
+            A: Matriz de coeficientes de las restricciones
+            b: Vector de términos independientes
+            constraint_types: Lista de tipos de restricciones ('<=', '>=', '=')
+            problem_type: 'max' o 'min'
+            M: Valor para el método de la Gran M
         """
-        self.c = np.array(c)
-        self.A = np.array(A)
-        self.b = np.array(b)
+        self.c = np.array(c, dtype=float)
+        self.A = np.array(A, dtype=float)
+        self.b = np.array(b, dtype=float)
         self.constraint_types = constraint_types
         self.problem_type = problem_type
-        self.M = M
-        self.num_vars = len(c)
-        self.num_constraints = len(b)
-        # Convertir minimización en maximización
+        self.M = M if problem_type == 'max' else -M
+        self.m, self.n = A.shape
+        self.steps = []
+        self.variable_names = []
+        self.prob = None
+        self._prepare_problem()
+
+    def _prepare_problem(self):
+        """Prepara el problema para el método de la Gran M."""
+        # Estandarizar el problema
+        self._standardize_problem()
+
+        # Crear nombres de variables
+        self.original_vars = [f'x{i + 1}' for i in range(self.n)]
+        self.slack_vars = [f's{i + 1}' for i in range(self.m)]
+        self.artificial_vars = [f'a{i + 1}' for i in range(self.m)]
+        self.variable_names = self.original_vars + self.slack_vars + self.artificial_vars
+
+    def _standardize_problem(self):
+        """Estandariza el problema convirtiendo las restricciones."""
         if self.problem_type == 'min':
             self.c = -self.c
-        # Crear el tableau inicial
-        self.tableau = self._create_initial_tableau()
 
-    def _create_initial_tableau(self):
+        for i in range(len(self.b)):
+            if self.b[i] < 0:
+                self.b[i] = -self.b[i]
+                self.A[i] = -self.A[i]
+                if self.constraint_types[i] != '=':
+                    self.constraint_types[i] = '<=' if self.constraint_types[i] == '>=' else '>='
+
+    def solve_with_steps(self):
         """
-        Crea el tableau inicial para el método de la Gran M.
+        Resuelve el problema usando el método de la Gran M y guarda los pasos.
+
+        Returns:
+            tuple: (solución, valor óptimo, pasos, nombres de variables)
         """
-        # Determinar el número de variables de holgura y artificiales
-        slack_vars = [1 if ct in ['<=', '>='] else 0 for ct in self.constraint_types]
-        artificial_vars = [1 if ct in ['>=', '='] else 0 for ct in self.constraint_types]
-        num_slack = sum(slack_vars)
-        num_artificial = sum(artificial_vars)
+        try:
+            # Crear el problema
+            self.prob = LpProblem("BigM_Method",
+                                  LpMaximize if self.problem_type == 'max' else LpMinimize)
 
-        # Construir la matriz ampliada
-        tableau = np.zeros((self.num_constraints + 1, self.num_vars + num_slack + num_artificial + 1))
+            # Crear variables
+            vars_dict = {}
+            for var_name in self.original_vars:
+                vars_dict[var_name] = LpVariable(var_name, lowBound=0)
 
-        # Rellenar la matriz A
-        tableau[:self.num_constraints, :self.num_vars] = self.A
+            # Agregar variables de holgura y artificiales
+            for i in range(self.m):
+                if self.constraint_types[i] in ['<=', '>=']:
+                    vars_dict[self.slack_vars[i]] = LpVariable(self.slack_vars[i], lowBound=0)
+                if self.constraint_types[i] in ['>=', '=']:
+                    vars_dict[self.artificial_vars[i]] = LpVariable(self.artificial_vars[i], lowBound=0)
 
-        # Rellenar las variables de holgura
-        slack_index = self.num_vars
-        for i, ct in enumerate(self.constraint_types):
-            if ct == '<=':
-                tableau[i, slack_index] = 1
-                slack_index += 1
-            elif ct == '>=':
-                tableau[i, slack_index] = -1
-                slack_index += 1
+            # Función objetivo con términos de penalización M
+            objective = lpSum(self.c[j] * vars_dict[self.original_vars[j]] for j in range(self.n))
 
-        # Rellenar las variables artificiales
-        artificial_index = self.num_vars + num_slack
-        for i, ct in enumerate(self.constraint_types):
-            if ct in ['>=', '=']:
-                tableau[i, artificial_index] = 1
-                artificial_index += 1
+            for i in range(self.m):
+                if self.constraint_types[i] in ['>=', '=']:
+                    objective -= self.M * vars_dict[self.artificial_vars[i]]
 
-        # Rellenar el lado derecho
-        tableau[:self.num_constraints, -1] = self.b
+            self.prob += objective
 
-        # Rellenar la función objetivo
-        c_extended = np.hstack((self.c, np.zeros(num_slack), np.full(num_artificial, -self.M)))
-        tableau[-1, :-1] = -c_extended
+            # Restricciones
+            for i in range(self.m):
+                constraint_expr = lpSum(self.A[i][j] * vars_dict[self.original_vars[j]]
+                                        for j in range(self.n))
 
-        return tableau
+                if self.constraint_types[i] == '<=':
+                    constraint_expr += vars_dict[self.slack_vars[i]]
+                elif self.constraint_types[i] == '>=':
+                    constraint_expr -= vars_dict[self.slack_vars[i]]
+                    constraint_expr += vars_dict[self.artificial_vars[i]]
+                else:  # '='
+                    constraint_expr += vars_dict[self.artificial_vars[i]]
 
-    def _find_pivot(self):
-        """
-        Encuentra el pivote para la iteración actual.
-        """
-        last_row = self.tableau[-1, :-1]
-        pivot_col = np.argmin(last_row)
-        if last_row[pivot_col] >= 0:
-            return None  # Solución óptima encontrada
-        ratios = self.tableau[:-1, -1] / self.tableau[:-1, pivot_col]
-        ratios[ratios < 0] = np.inf
-        pivot_row = np.argmin(ratios)
-        if ratios[pivot_row] == np.inf:
-            raise ValueError("El problema es no acotado.")
-        return pivot_row, pivot_col
+                self.prob += constraint_expr == self.b[i]
 
-    def _pivot(self, pivot_row, pivot_col):
-        """
-        Realiza el pivoteo en el tableau.
-        """
-        pivot_element = self.tableau[pivot_row, pivot_col]
-        self.tableau[pivot_row, :] /= pivot_element
-        for i in range(self.tableau.shape[0]):
-            if i != pivot_row:
-                self.tableau[i, :] -= self.tableau[i, pivot_col] * self.tableau[pivot_row, :]
+            # Guardar el tableau inicial
+            self.steps.append(self._get_current_tableau())
 
-    def solve(self):
-        """
-        Resuelve el problema de programación lineal usando el método de la Gran M.
-        """
-        steps = []
-        while True:
-            steps.append(self.tableau.copy())
-            pivot = self._find_pivot()
-            if pivot is None:
-                break
-            pivot_row, pivot_col = pivot
-            self._pivot(pivot_row, pivot_col)
+            # Resolver
+            self.prob.solve(PULP_CBC_CMD(msg=False))
 
-        # Extraer la solución
-        solution = np.zeros(self.num_vars)
-        for i in range(self.num_vars):
-            col = self.tableau[:, i]
-            if np.sum(col == 1) == 1 and np.sum(col) == 1:
-                solution[i] = self.tableau[np.where(col == 1)[0][0], -1]
-        optimal_value = self.tableau[-1, -1]
-        if self.problem_type == 'min':
-            optimal_value = -optimal_value
-        return solution, optimal_value, steps
+            # Guardar el tableau final
+            self.steps.append(self._get_current_tableau())
+
+            # Verificar si se encontró solución óptima
+            if self.prob.status != LpStatusOptimal:
+                return None, None, self.steps, self.variable_names
+
+            # Extraer solución
+            solution = np.zeros(self.n)
+            for j in range(self.n):
+                solution[j] = value(vars_dict[self.original_vars[j]])
+
+            optimal_value = value(self.prob.objective)
+            if self.problem_type == 'min':
+                optimal_value = -optimal_value
+
+            return solution, optimal_value, self.steps, self.variable_names
+        except Exception as e:
+            print(f"Error en solve_with_steps: {e}")
+            return None, None, None, None
+
+    def _get_current_tableau(self):
+        """Obtiene el tableau actual del problema."""
+        if not self.prob:
+            return None
+
+        tableau = []
+        all_vars = self.prob.variables()
+
+        # Diccionario de índices de variables
+        var_indices = {var.name: i for i, var in enumerate(all_vars)}
+
+        # Fila de la función objetivo
+        obj_row = [0.0] * (len(all_vars) + 1)
+        for var, coef in self.prob.objective.items():
+            if var.name in var_indices:
+                obj_row[var_indices[var.name]] = coef
+        tableau.append(obj_row)
+
+        # Filas de restricciones
+        for name, constraint in self.prob.constraints.items():
+            row = [0.0] * (len(all_vars) + 1)
+            for var, coef in constraint.items():
+                if var.name in var_indices:
+                    row[var_indices[var.name]] = coef
+            row[-1] = -constraint.constant
+            tableau.append(row)
+
+        return np.array(tableau)
+
+    def get_c_ranges(self):
+        """Obtiene los rangos de sensibilidad para los coeficientes de la función objetivo."""
+        sensitivity = {}
+
+        for j in range(self.n):
+            c_original = self.c[j]
+            delta = max(abs(c_original) * 0.01, 1.0)
+
+            # Análisis de incremento
+            self.c[j] = c_original + delta
+            _, val_up, _, _ = self.solve_with_steps()
+
+            # Análisis de decremento
+            self.c[j] = c_original - delta
+            _, val_down, _, _ = self.solve_with_steps()
+
+            # Restaurar valor original
+            self.c[j] = c_original
+
+            if val_up is not None and val_down is not None:
+                sensitivity[f'x{j + 1}'] = {
+                    'current_value': float(c_original),
+                    'upper_bound': float(c_original + delta),
+                    'lower_bound': float(c_original - delta),
+                    'impact': float((val_up - val_down) / (2 * delta))
+                }
+
+        return sensitivity
+
+    def get_b_ranges(self):
+        """Obtiene los rangos de sensibilidad para los términos independientes."""
+        sensitivity = {}
+
+        for i in range(len(self.b)):
+            b_original = self.b[i]
+            delta = max(abs(b_original) * 0.01, 1.0)
+
+            # Análisis de incremento
+            self.b[i] = b_original + delta
+            _, val_up, _, _ = self.solve_with_steps()
+
+            # Análisis de decremento
+            self.b[i] = b_original - delta
+            _, val_down, _, _ = self.solve_with_steps()
+
+            # Restaurar valor original
+            self.b[i] = b_original
+
+            if val_up is not None and val_down is not None:
+                sensitivity[f'constraint_{i + 1}'] = {
+                    'current_value': float(b_original),
+                    'upper_bound': float(b_original + delta),
+                    'lower_bound': float(b_original - delta),
+                    'shadow_price': float((val_up - val_down) / (2 * delta))
+                }
+
+        return sensitivity
