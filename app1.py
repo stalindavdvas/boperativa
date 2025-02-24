@@ -2,16 +2,16 @@ from flask import Flask, request, jsonify
 import numpy as np
 import pulp
 import json
-from metodos.EsquinaNoroeste import obtener_resultado
 from metodos.arbolminimo import kruskal
-from metodos.big_m import BigMWithSteps
+from metodos.cosmin import resolver_transporte_costo_minimo
+from metodos.esqNor import resolver_transporte_pulp
+from metodos.flujominimo import success_shortest_path
+from metodos.granM import BigMWithSteps
 from metodos.caminocorto import dijkstra
-from metodos.costo_minimo import calcular_costo_minimo
-from metodos.costominimo import calcular_costominimo
 from metodos.dual import DualSimplex
 from metodos.flujomaximo import edmonds_karp
+from metodos.mvogel import resolver_transporte_vogel
 from metodos.simplex import Simplex
-from collections import defaultdict
 from flask_cors import CORS
 
 from metodos.two_phase import TwoPhaseWithSteps
@@ -356,88 +356,270 @@ def dual_solver():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 ################################ TRANSPORTE: ESQUINA NOROESTE #####################################
-@app.route('/esquinanoroeste', methods=['POST'])
+# @app.route('/esquinanoroeste', methods=['POST'])
+# def calcular_esquina_noroeste():
+#     # Recibir datos del frontend
+#     data = request.get_json()
+#
+#     costos = data.get('costos')
+#     suministros = data.get('suministros')
+#     demandas = data.get('demandas')
+#
+#     # Validar los datos de entrada
+#     if not costos or not suministros or not demandas:
+#         return jsonify({"error": "Faltan datos necesarios"}), 400
+#
+#     try:
+#         # Llamar al método para calcular la solución
+#         resultado = obtener_resultado(costos, suministros, demandas)
+#
+#         # Devolver el resultado en formato JSON
+#         return jsonify({"resultado": resultado})
+#
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+@app.route('/esquinanor', methods=['POST'])
 def calcular_esquina_noroeste():
-    # Recibir datos del frontend
-    data = request.get_json()
-
-    costos = data.get('costos')
-    suministros = data.get('suministros')
-    demandas = data.get('demandas')
-
-    # Validar los datos de entrada
-    if not costos or not suministros or not demandas:
-        return jsonify({"error": "Faltan datos necesarios"}), 400
-
     try:
-        # Llamar al método para calcular la solución
-        resultado = obtener_resultado(costos, suministros, demandas)
+        # Recibir datos del frontend
+        data = request.get_json()
+        print("Datos recibidos:", data)
+
+        costos = data.get('costos')
+        suministros = data.get('suministros')
+        demandas = data.get('demandas')
+        nombres_origenes = data.get('nombresOrigenes', [])
+        nombres_destinos = data.get('nombresDestinos', [])
+        descripcion_problema = data.get('descripcionProblema', '')
+
+        # Validar los datos de entrada
+        if not isinstance(costos, list) or not isinstance(suministros, list) or not isinstance(demandas, list):
+            return jsonify({"error": "Los datos deben ser listas"}), 400
+        if len(suministros) != len(costos):
+            return jsonify(
+                {"error": "El número de filas en 'costos' debe coincidir con la longitud de 'suministros'"}), 400
+        if len(demandas) != len(costos[0]):
+            return jsonify(
+                {"error": "El número de columnas en 'costos' debe coincidir con la longitud de 'demandas'"}), 400
+
+        # Resolver el problema de transporte usando PuLP
+        resultado = resolver_transporte_pulp(costos, suministros, demandas)
+
+        # Construir la tabla de resultados como texto
+        tabla_resultados = "Tabla de Resultados:\n"
+        tabla_resultados += f"{'Origen/Destino':<15}" + "".join(
+            f"{nombre:<12}" for nombre in nombres_destinos) + "Suministro\n"
+        for i, fila in enumerate(resultado["asignaciones"]):
+            origen = nombres_origenes[i] if i < len(nombres_origenes) else f"Origen {i + 1}"
+            tabla_resultados += f"{origen:<15}" + "".join(f"{valor:<12}" for valor in fila) + f"{suministros[i]}\n"
+        tabla_resultados += f"{'Demanda':<15}" + "".join(f"{demanda:<12}" for demanda in demandas) + "\n"
+
+        # Crear el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Orígenes: {", ".join(nombres_origenes) if nombres_origenes else "No especificados"}
+            - Destinos: {", ".join(nombres_destinos) if nombres_destinos else "No especificados"}
+            - Suministros: {suministros}
+            - Demandas: {demandas}
+            - Matriz de costos: {costos}
+
+            Resultados del cálculo:
+            - Solución inicial:
+            {tabla_resultados}
+            - Costo total: {resultado["costo_total"]}
+            - Prueba de optimalidad: {'Óptima' if resultado["es_optima"] else 'No óptima'}
+            - Valores de U: {resultado["U"]}
+            - Valores de V: {resultado["V"]}
+
+            Por favor, proporciona un análisis detallado de la solución inicial en base a los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
 
         # Devolver el resultado en formato JSON
-        return jsonify({"resultado": resultado})
+        return jsonify({
+            "solution": resultado["asignaciones"],
+            "optimal_value": resultado["costo_total"],
+            "es_optima": resultado["es_optima"],
+            "U": resultado["U"],
+            "V": resultado["V"],
+            "interpretation": interpretation,
+        })
 
     except Exception as e:
+        print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 ################################ TRANSPORTE: COSTO MINIMO #####################################
 @app.route('/costominimo', methods=['POST'])
-def calcular():
-    data = request.get_json()
-
-    # Obtener los datos del cuerpo de la solicitud
-    costos = data['costos']
-    suministros = data['suministros']
-    demandas = data['demandas']
-
-    # Llamar a la función para calcular el costo mínimo
-    resultado = calcular_costo_minimo(costos, suministros, demandas)
-
-    # Devolver la respuesta con los resultados
-    return jsonify({'resultado': resultado})
-
-@app.route('/costo-minimo', methods=['POST'])
-def calcular1():
+def calcular_costo_minimo():
     try:
-        # Obtener los datos del cuerpo de la solicitud
+        # Recibir datos del frontend
         data = request.get_json()
-        costos = data['costos']
-        suministros = data['suministros']
-        demandas = data['demandas']
+        print("Datos recibidos:", data)
 
-        # Validar que los datos no estén vacíos
-        if not costos or not suministros or not demandas:
-            return jsonify({"error": "Faltan datos necesarios"}), 400
+        costos = data.get('costos')
+        suministros = data.get('suministros')
+        demandas = data.get('demandas')
+        nombres_origenes = data.get('nombresOrigenes', [])
+        nombres_destinos = data.get('nombresDestinos', [])
+        descripcion_problema = data.get('descripcionProblema', '')
 
-        # Llamar a la función para calcular el costo mínimo
-        resultado = calcular_costominimo(costos, suministros, demandas)
+        # Validar los datos de entrada
+        if not isinstance(costos, list) or not isinstance(suministros, list) or not isinstance(demandas, list):
+            return jsonify({"error": "Los datos deben ser listas"}), 400
+        if len(suministros) != len(costos):
+            return jsonify(
+                {"error": "El número de filas en 'costos' debe coincidir con la longitud de 'suministros'"}), 400
+        if len(demandas) != len(costos[0]):
+            return jsonify(
+                {"error": "El número de columnas en 'costos' debe coincidir con la longitud de 'demandas'"}), 400
 
-        # Devolver la respuesta con los resultados
-        return jsonify({'resultado': resultado})
+        # Resolver el problema de transporte usando el método del costo mínimo
+        resultado = resolver_transporte_costo_minimo(costos, suministros, demandas)
+
+        # Construir la tabla de resultados como texto
+        tabla_resultados = "Tabla de Resultados:\n"
+        tabla_resultados += f"{'Origen/Destino':<15}" + "".join(
+            f"{nombre:<12}" for nombre in nombres_destinos) + "Suministro\n"
+        for i, fila in enumerate(resultado["asignaciones"]):
+            origen = nombres_origenes[i] if i < len(nombres_origenes) else f"Origen {i + 1}"
+            tabla_resultados += f"{origen:<15}" + "".join(f"{valor:<12}" for valor in fila) + f"{suministros[i]}\n"
+        tabla_resultados += f"{'Demanda':<15}" + "".join(f"{demanda:<12}" for demanda in demandas) + "\n"
+
+        # Crear el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Orígenes: {", ".join(nombres_origenes) if nombres_origenes else "No especificados"}
+            - Destinos: {", ".join(nombres_destinos) if nombres_destinos else "No especificados"}
+            - Suministros: {suministros}
+            - Demandas: {demandas}
+            - Matriz de costos: {costos}
+
+            Resultados del cálculo:
+            - Solución inicial:
+            {tabla_resultados}
+            - Costo total: {resultado["costo_total"]}
+            - Prueba de optimalidad: {'Óptima' if resultado["es_optima"] else 'No óptima'}
+            - Valores de U: {resultado["U"]}
+            - Valores de V: {resultado["V"]}
+
+            Por favor, proporciona un análisis detallado de la solución inicial en base a los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver el resultado en formato JSON
+        return jsonify({
+            "solution": resultado["asignaciones"],
+            "optimal_value": resultado["costo_total"],
+            "es_optima": resultado["es_optima"],
+            "U": resultado["U"],
+            "V": resultado["V"],
+            "interpretation": interpretation,
+        })
+
     except Exception as e:
+        print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 ################################ TRANSPORTE: VOGEL #####################################
 @app.route('/vogel', methods=['POST'])
 def calcular_vogel():
     try:
-        # Obtener los datos del cuerpo de la solicitud
+        # Recibir datos del frontend
         data = request.get_json()
-        costos = data['costos']
-        suministros = data['suministros']
-        demandas = data['demandas']
+        print("Datos recibidos:", data)
 
-        # Validar que los datos no estén vacíos
-        if not costos or not suministros or not demandas:
-            return jsonify({"error": "Faltan datos necesarios"}), 400
+        costos = data.get('costos')
+        suministros = data.get('suministros')
+        demandas = data.get('demandas')
+        nombres_origenes = data.get('nombresOrigenes', [])
+        nombres_destinos = data.get('nombresDestinos', [])
+        descripcion_problema = data.get('descripcionProblema', '')
 
-        # Llamar a la función para calcular el método de Vogel
-        resultado, penalizaciones = metodo_vogel(costos, suministros, demandas)
+        # Validar los datos de entrada
+        if not isinstance(costos, list) or not isinstance(suministros, list) or not isinstance(demandas, list):
+            return jsonify({"error": "Los datos deben ser listas"}), 400
+        if len(suministros) != len(costos):
+            return jsonify(
+                {"error": "El número de filas en 'costos' debe coincidir con la longitud de 'suministros'"}), 400
+        if len(demandas) != len(costos[0]):
+            return jsonify(
+                {"error": "El número de columnas en 'costos' debe coincidir con la longitud de 'demandas'"}), 400
 
-        # Devolver la respuesta con los resultados y las penalizaciones
+        # Resolver el problema de transporte usando el método de Vogel
+        resultado = resolver_transporte_vogel(costos, suministros, demandas)
+
+        # Construir la tabla de resultados como texto
+        tabla_resultados = "Tabla de Resultados:\n"
+        tabla_resultados += f"{'Origen/Destino':<15}" + "".join(
+            f"{nombre:<12}" for nombre in nombres_destinos) + "Suministro\n"
+        for i, fila in enumerate(resultado["asignaciones"]):
+            origen = nombres_origenes[i] if i < len(nombres_origenes) else f"Origen {i + 1}"
+            tabla_resultados += f"{origen:<15}" + "".join(f"{valor:<12}" for valor in fila) + f"{suministros[i]}\n"
+        tabla_resultados += f"{'Demanda':<15}" + "".join(f"{demanda:<12}" for demanda in demandas) + "\n"
+
+        # Crear el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Orígenes: {", ".join(nombres_origenes) if nombres_origenes else "No especificados"}
+            - Destinos: {", ".join(nombres_destinos) if nombres_destinos else "No especificados"}
+            - Suministros: {suministros}
+            - Demandas: {demandas}
+            - Matriz de costos: {costos}
+
+            Resultados del cálculo:
+            - Solución inicial:
+            {tabla_resultados}
+            - Costo total: {resultado["costo_total"]}
+            - Prueba de optimalidad: {'Óptima' if resultado["es_optima"] else 'No óptima'}
+            - Valores de U: {resultado["U"]}
+            - Valores de V: {resultado["V"]}
+
+            Por favor, proporciona un análisis detallado de la solución inicial en base a los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver el resultado en formato JSON
         return jsonify({
-            'resultado': resultado,
-            'penalizaciones': penalizaciones
+            "solution": resultado["asignaciones"],
+            "optimal_value": resultado["costo_total"],
+            "es_optima": resultado["es_optima"],
+            "U": resultado["U"],
+            "V": resultado["V"],
+            "interpretation": interpretation,
         })
+
     except Exception as e:
+        print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
+
+
 ################################ REDES: CAMINO MAS CORTO #####################################
 @app.route('/caminocorto', methods=['POST'])
 def shortest_path():
@@ -446,7 +628,8 @@ def shortest_path():
         data = request.get_json()
         graph = data['graph']  # Grafo representado como un diccionario
         start = data['start']  # Nodo inicial
-        end = data['end']      # Nodo final
+        end = data['end']  # Nodo final
+        descripcion_problema = data.get('descripcionProblema', '')  # Descripción opcional del problema
 
         # Validar que los datos no estén vacíos
         if not graph or not start or not end:
@@ -455,11 +638,38 @@ def shortest_path():
         # Llamar a la función para calcular el camino más corto
         path, distance = dijkstra(graph, start, end)
 
-        # Devolver la respuesta con el camino y la distancia
+        # Construir el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Grafo: {graph}
+            - Nodo inicial: {start}
+            - Nodo final: {end}
+
+            Resultados del cálculo:
+            - Camino más corto: {path}
+            - Distancia total: {distance}
+
+            Por favor, proporciona un análisis detallado del camino más corto encontrado,
+            considerando el contexto del problema y los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver la respuesta con el camino, la distancia y la interpretación
         return jsonify({
             'path': path,
-            'distance': distance
+            'distance': distance,
+            'interpretation': interpretation
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 ################################ REDES: FLUJO MAXIMO #####################################
@@ -470,7 +680,8 @@ def flujo_maximo():
         data = request.get_json()
         graph = data['graph']  # Grafo representado como un diccionario
         source = data['source']  # Nodo fuente
-        sink = data['sink']      # Nodo sumidero
+        sink = data['sink']  # Nodo sumidero
+        descripcion_problema = data.get('descripcionProblema', '')  # Descripción opcional del problema
 
         # Validar que los datos no estén vacíos
         if not graph or not source or not sink:
@@ -479,11 +690,38 @@ def flujo_maximo():
         # Llamar a la función para calcular el flujo máximo
         max_flow, used_edges = edmonds_karp(graph, source, sink)
 
-        # Devolver la respuesta con el flujo máximo y las aristas utilizadas
+        # Construir el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Grafo: {graph}
+            - Nodo fuente: {source}
+            - Nodo sumidero: {sink}
+
+            Resultados del cálculo:
+            - Flujo máximo: {max_flow}
+            - Aristas utilizadas: {used_edges}
+
+            Por favor, proporciona un análisis detallado del flujo máximo encontrado,
+            considerando el contexto del problema y los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver la respuesta con el flujo máximo, las aristas utilizadas y la interpretación
         return jsonify({
             'max_flow': max_flow,
-            'used_edges': used_edges
+            'used_edges': used_edges,
+            'interpretation': interpretation
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 ################################ REDES: ARBOL EXPANSION MINIMA #####################################
@@ -494,6 +732,7 @@ def mst():
         data = request.get_json()
         edges = data['edges']  # Lista de aristas con pesos
         nodes = data['nodes']  # Lista de nodos
+        descripcion_problema = data.get('descripcionProblema', '')  # Descripción opcional del problema
 
         # Validar que los datos no estén vacíos
         if not edges or not nodes:
@@ -502,11 +741,91 @@ def mst():
         # Llamar a la función para calcular el MST
         total_cost, mst_edges = kruskal(edges, nodes)
 
-        # Devolver la respuesta con el costo total y las aristas del MST
+        # Construir el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Nodos: {nodes}
+            - Aristas: {edges}
+
+            Resultados del cálculo:
+            - Costo total del MST: {total_cost}
+            - Aristas del MST: {mst_edges}
+
+            Por favor, proporciona un análisis detallado del Árbol de Expansión Mínima encontrado,
+            considerando el contexto del problema y los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver la respuesta con el costo total, las aristas del MST y la interpretación
         return jsonify({
             'total_cost': total_cost,
-            'mst_edges': mst_edges
+            'mst_edges': mst_edges,
+            'interpretation': interpretation
         })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+###################REDES FLUJO COSTO MINIMO ###################################
+@app.route('/flujo-costominimo', methods=['POST'])
+def flujo_costo_minimo():
+    try:
+        # Obtener los datos del cuerpo de la solicitud
+        data = request.get_json()
+        graph = data['graph']  # Grafo representado como un diccionario
+        source = data['source']  # Nodo fuente
+        sink = data['sink']  # Nodo sumidero
+        demands = data['demands']  # Demandas de cada nodo
+        descripcion_problema = data.get('descripcionProblema', '')  # Descripción opcional del problema
+
+        # Validar que los datos no estén vacíos
+        if not graph or not source or not sink or not demands:
+            return jsonify({"error": "Faltan datos necesarios"}), 400
+
+        # Llamar a la función para calcular el flujo de costo mínimo
+        total_cost, flow_edges = success_shortest_path(graph, source, sink, demands)
+
+        # Construir el mensaje para Gemini
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Grafo: {graph}
+            - Nodo fuente: {source}
+            - Nodo sumidero: {sink}
+            - Demandas: {demands}
+
+            Resultados del cálculo:
+            - Costo total del flujo: {total_cost}
+            - Flujo asignado en las aristas: {flow_edges}
+
+            Por favor, proporciona un análisis detallado del flujo de costo mínimo encontrado,
+            considerando el contexto del problema y los datos proporcionados.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver la respuesta con el costo total, el flujo asignado y la interpretación
+        return jsonify({
+            'total_cost': total_cost,
+            'flow_edges': flow_edges,
+            'interpretation': interpretation
+        })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
