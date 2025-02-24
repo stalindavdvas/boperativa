@@ -1,28 +1,24 @@
-import pulp
-
-
 def resolver_transporte_costo_minimo(costos, suministros, demandas):
     """
-    Resuelve el problema de transporte usando el método del costo mínimo.
-    Args:
-        costos: Matriz de costos (n x m).
-        suministros: Vector de suministros (n).
-        demandas: Vector de demandas (m).
-    Returns:
-        Un diccionario con las asignaciones, el costo total y la prueba de optimalidad.
-    """
+       Resuelve el problema de transporte usando el método de costo mínimo.
+       Args:
+           costos: Matriz de costos (n x m).
+           suministros: Vector de suministros (n).
+           demandas: Vector de demandas (m).
+       Returns:
+           Un diccionario con la matriz de asignaciones, costo total y prueba de optimalidad.
+       """
+    # Balancear el problema si es necesario
+    suministros, demandas, costos = balancear_problema(suministros, demandas, costos)
+
     n = len(suministros)  # Número de orígenes
     m = len(demandas)  # Número de destinos
 
-    # Crear una copia mutable de suministros y demandas
-    suministros = suministros[:]
-    demandas = demandas[:]
-
-    # Inicializar la matriz de asignaciones
+    # Inicializar matriz de asignaciones con ceros
     asignaciones = [[0 for _ in range(m)] for _ in range(n)]
 
-    # Método del costo mínimo
-    while any(s > 0 for s in suministros) and any(d > 0 for d in demandas):
+    # Método de costo mínimo
+    while sum(suministros) > 0 and sum(demandas) > 0:
         # Encontrar la celda con el menor costo
         min_cost = float('inf')
         min_i, min_j = -1, -1
@@ -32,19 +28,21 @@ def resolver_transporte_costo_minimo(costos, suministros, demandas):
                     min_cost = costos[i][j]
                     min_i, min_j = i, j
 
-        if min_i == -1 or min_j == -1:
-            break
-
-        # Asignar la cantidad máxima posible
+        # Asignar la cantidad mínima entre suministro y demanda
         cantidad = min(suministros[min_i], demandas[min_j])
         asignaciones[min_i][min_j] = cantidad
+
+        # Actualizar suministro y demanda
         suministros[min_i] -= cantidad
         demandas[min_j] -= cantidad
 
-    # Calcular el costo total
+    # Manejo de degeneración si es necesario
+    agregar_penalizacion(asignaciones)
+
+    # Calcular costo total
     costo_total = sum(asignaciones[i][j] * costos[i][j] for i in range(n) for j in range(m))
 
-    # Realizar la prueba de optimalidad
+    # Prueba de optimalidad
     U, V, es_optima = prueba_optimalidad(asignaciones, costos)
 
     return {
@@ -54,6 +52,47 @@ def resolver_transporte_costo_minimo(costos, suministros, demandas):
         "U": U,
         "V": V,
     }
+
+
+def balancear_problema(suministros, demandas, costos):
+    """
+    Balancea el problema de transporte si la oferta y la demanda no coinciden.
+    """
+    suma_suministros = sum(suministros)
+    suma_demandas = sum(demandas)
+
+    if suma_suministros != suma_demandas:
+        if suma_suministros < suma_demandas:
+            # Agregar una planta ficticia (suministro adicional)
+            suministros.append(suma_demandas - suma_suministros)
+            costos.append([0] * len(demandas))
+        else:
+            # Agregar un destino ficticio (demanda adicional)
+            demandas.append(suma_suministros - suma_demandas)
+            for row in costos:
+                row.append(0)
+
+    return suministros, demandas, costos
+
+
+def agregar_penalizacion(asignaciones):
+    """
+    Agrega valores artificiales (ε) en celdas vacías para evitar degeneración.
+    Se necesita que haya exactamente (n + m - 1) asignaciones básicas.
+    """
+    n = len(asignaciones)
+    m = len(asignaciones[0])
+    num_asignaciones = sum(1 for i in range(n) for j in range(m) if asignaciones[i][j] > 0)
+    necesario = n + m - 1
+
+    if num_asignaciones < necesario:
+        for i in range(n):
+            for j in range(m):
+                if asignaciones[i][j] == 0:
+                    asignaciones[i][j] = 1e-6  # Agregar un valor artificial pequeño
+                    num_asignaciones += 1
+                    if num_asignaciones == necesario:
+                        return
 
 
 def prueba_optimalidad(asignaciones, costos):
@@ -70,25 +109,31 @@ def prueba_optimalidad(asignaciones, costos):
     n = len(asignaciones)
     m = len(asignaciones[0])
 
-    # Inicializar U y V
+    # Inicializar U y V con None
     U = [None] * n
     V = [None] * m
-    U[0] = 0  # Asignamos un valor arbitrario a U[0]
+    U[0] = 0  # Se asigna arbitrariamente el valor 0 a U[0]
 
-    # Calcular U y V
+    # Calcular U y V iterativamente
     max_iteraciones = n * m
     iteraciones = 0
     while None in U or None in V:
+        cambios = False
         for i in range(n):
             for j in range(m):
                 if asignaciones[i][j] > 0:  # Celda básica
                     if U[i] is not None and V[j] is None:
                         V[j] = costos[i][j] - U[i]
+                        cambios = True
                     elif V[j] is not None and U[i] is None:
                         U[i] = costos[i][j] - V[j]
+                        cambios = True
         iteraciones += 1
         if iteraciones > max_iteraciones:
-            raise ValueError("No se pudieron calcular todos los valores de U y V")
+            raise ValueError("No se pudieron calcular todos los valores de U y V debido a una solución degenerada")
+
+        if not cambios:
+            break
 
     # Verificar optimalidad
     es_optima = True
