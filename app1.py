@@ -10,6 +10,7 @@ from metodos.granM import BigMWithSteps
 from metodos.caminocorto import dijkstra
 from metodos.dual import DualSimplex
 from metodos.flujomaximo import edmonds_karp
+from metodos.mochila import knapsack
 from metodos.mvogel import resolver_transporte_vogel
 from metodos.simplex import Simplex
 from flask_cors import CORS
@@ -823,6 +824,55 @@ def flujo_costo_minimo():
         return jsonify({
             'total_cost': total_cost,
             'flow_edges': flow_edges,
+            'interpretation': interpretation
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+############################ PROGRAMACION DINÁMICA #################################
+@app.route('/mochila', methods=['POST'])
+def mochila():
+    try:
+        data = request.get_json()
+        items = data['items']
+        capacity = data['capacity']
+        descripcion_problema = data.get('descripcionProblema', '')
+
+        # Validar datos
+        if not items or capacity is None:
+            return jsonify({"error": "Faltan datos necesarios"}), 400
+
+        # Resolver el problema
+        max_value, selected_items = knapsack(items, capacity)
+
+        # Construir interpretación
+        gemini_prompt = f"""
+            Contexto del problema: {descripcion_problema}
+
+            Datos proporcionados:
+            - Elementos: {items}
+            - Capacidad de la mochila: {capacity}
+
+            Resultados del cálculo:
+            - Valor máximo obtenido: {max_value}
+            - Elementos seleccionados: {[items[i]['nombre'] for i in selected_items]}
+
+            Por favor, proporciona un análisis detallado de la solución encontrada.
+            """
+
+        # Llamar a Gemini
+        gemini_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_prompt,
+        )
+        interpretation = gemini_response.text
+        print("Respuesta de Gemini recibida:", interpretation)
+
+        # Devolver respuesta
+        selected_items_names = [items[i]['nombre'] for i in selected_items]
+        return jsonify({
+            'max_value': max_value,
+            'selected_items': selected_items_names,
             'interpretation': interpretation
         })
 
