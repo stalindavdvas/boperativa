@@ -1,33 +1,39 @@
-def knapsack(items, capacity):
+def knapsack_multiple(items, capacity):
     """
-    Resuelve el Problema de la Mochila usando Programación Dinámica.
+    Resuelve el Problema de la Mochila con múltiples unidades de cada elemento.
     Args:
-        items: Lista de diccionarios con 'peso' y 'valor'.
+        items: Lista de diccionarios con 'nombre', 'peso', 'valor' y 'cantidad_maxima'.
         capacity: Capacidad máxima de la mochila.
     Returns:
         max_value: Valor máximo que se puede obtener.
-        selected_items: Índices de los elementos seleccionados.
+        selected_items: Diccionario con la cantidad de cada elemento seleccionado.
     """
     n = len(items)
-    dp = [[0] * (capacity + 1) for _ in range(n + 1)]
+    dp = [0] * (capacity + 1)  # Tabla DP para almacenar el valor máximo
+    selected_items = [0] * n   # Para rastrear cuántas unidades de cada elemento se seleccionan
 
-    # Llenar la tabla DP
-    for i in range(1, n + 1):
-        peso = items[i - 1]['peso']
-        valor = items[i - 1]['valor']
-        for w in range(capacity + 1):
-            if peso <= w:
-                dp[i][w] = max(dp[i - 1][w], dp[i - 1][w - peso] + valor)
-            else:
-                dp[i][w] = dp[i - 1][w]
+    for i in range(n):
+        peso = items[i]['peso']
+        valor = items[i]['valor']
+        cantidad_maxima = items[i]['cantidad_maxima']
+
+        # Iterar en orden inverso para evitar sobrescribir valores
+        for w in range(capacity, 0, -1):
+            for cnt in range(1, cantidad_maxima + 1):
+                if cnt * peso <= w:
+                    if dp[w] < dp[w - cnt * peso] + cnt * valor:
+                        dp[w] = dp[w - cnt * peso] + cnt * valor
+                        selected_items[i] = cnt
 
     # Reconstruir la solución
-    max_value = dp[n][capacity]
-    selected_items = []
-    w = capacity
-    for i in range(n, 0, -1):
-        if dp[i][w] != dp[i - 1][w]:
-            selected_items.append(i - 1)
-            w -= items[i - 1]['peso']
+    max_value = dp[capacity]
+    result = {}
+    for i in range(n):
+        if selected_items[i] > 0:
+            result[items[i]['nombre']] = {
+                "cantidad": selected_items[i],
+                "peso_unitario": items[i]['peso'],
+                "valor_unitario": items[i]['valor']
+            }
 
-    return max_value, selected_items
+    return max_value, result

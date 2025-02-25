@@ -10,7 +10,7 @@ from metodos.granM import BigMWithSteps
 from metodos.caminocorto import dijkstra
 from metodos.dual import DualSimplex
 from metodos.flujomaximo import edmonds_karp
-from metodos.mochila import knapsack
+from metodos.mochila import  knapsack_multiple
 from metodos.mvogel import resolver_transporte_vogel
 from metodos.simplex import Simplex
 from flask_cors import CORS
@@ -833,19 +833,20 @@ def flujo_costo_minimo():
 @app.route('/mochila', methods=['POST'])
 def mochila():
     try:
+        # Obtener los datos del cuerpo de la solicitud
         data = request.get_json()
-        items = data['items']
-        capacity = data['capacity']
-        descripcion_problema = data.get('descripcionProblema', '')
+        items = data['items']  # Lista de elementos con nombre, peso, valor y cantidad_maxima
+        capacity = data['capacity']  # Capacidad de la mochila
+        descripcion_problema = data.get('descripcionProblema', '')  # Descripción opcional del problema
 
-        # Validar datos
+        # Validar que los datos no estén vacíos
         if not items or capacity is None:
             return jsonify({"error": "Faltan datos necesarios"}), 400
 
-        # Resolver el problema
-        max_value, selected_items = knapsack(items, capacity)
+        # Llamar a la función para resolver el problema de la mochila
+        max_value, selected_items = knapsack_multiple(items, capacity)
 
-        # Construir interpretación
+        # Construir el mensaje para Gemini
         gemini_prompt = f"""
             Contexto del problema: {descripcion_problema}
 
@@ -855,9 +856,10 @@ def mochila():
 
             Resultados del cálculo:
             - Valor máximo obtenido: {max_value}
-            - Elementos seleccionados: {[items[i]['nombre'] for i in selected_items]}
+            - Elementos seleccionados: {selected_items}
 
-            Por favor, proporciona un análisis detallado de la solución encontrada.
+            Por favor, proporciona un análisis detallado de la solución encontrada,
+            considerando el contexto del problema y los datos proporcionados.
             """
 
         # Llamar a Gemini
@@ -868,11 +870,10 @@ def mochila():
         interpretation = gemini_response.text
         print("Respuesta de Gemini recibida:", interpretation)
 
-        # Devolver respuesta
-        selected_items_names = [items[i]['nombre'] for i in selected_items]
+        # Devolver la respuesta con el valor máximo, los elementos seleccionados y la interpretación
         return jsonify({
             'max_value': max_value,
-            'selected_items': selected_items_names,
+            'selected_items': selected_items,
             'interpretation': interpretation
         })
 
